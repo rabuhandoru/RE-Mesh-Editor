@@ -547,28 +547,30 @@ class StreamingInfo():
 		
 class StreamingBufferHeaderEntry():
 	def __init__(self):
-		self.unkn0 = 0
+		self.vertexElementOffset = 0
 		self.totalBufferSize = 0
 		self.vertexBufferLength = 0
 		self.mainVertexElementCount = 0
 		self.vertexElementCount = 0
 		self.unpaddedBufferSize = 0
 		self.unpaddedBufferSize2 = 0
+		self.unkn0 = 0
+		self.unkn1 = 0
+		self.unkn2 = 0
 		self.unkn7 = 0
 		self.unkn8 = 0
 		self.unkn9 = 0
 		self.unkn10 = 0
 		self.unkn11 = 0
-		self.unkn12 = 0
-		self.unkn13 = 0
-		self.nextBufferOffset = 0
-		self.unkn15 = 0
 		self.vertexBuffer = None
 		self.faceBuffer = None
 		self.vertexElementList = []
 		
 	def read(self,file):
-		self.unkn0 = read_uint64(file)
+		self.vertexElementOffset = read_uint64(file)
+		self.unkn0 = read_uint(file)
+		self.unkn1 = read_uint(file)
+		self.unkn2 = read_uint64(file)
 		self.totalBufferSize = read_uint(file)
 		self.vertexBufferLength = read_uint(file)
 		self.mainVertexElementCount = read_ushort(file)
@@ -580,14 +582,12 @@ class StreamingBufferHeaderEntry():
 		self.unkn9 = read_uint(file)
 		self.unkn10 = read_uint(file)
 		self.unkn11 = read_uint(file)
-		self.unkn12 = read_uint(file)
-		self.unkn13 = read_uint(file)
-		self.nextBufferOffset = read_uint(file)
-		self.unkn15 = read_uint(file)
-
 
 	def write(self,file):
-		write_uint64(file, self.unkn0)
+		write_uint64(file, self.vertexElementOffset)
+		write_uint(file, self.unkn0)
+		write_uint(file, self.unkn1)
+		write_uint64(file, self.unkn2)
 		write_uint(file, self.totalBufferSize)
 		write_uint(file, self.vertexBufferLength)
 		write_ushort(file, self.mainVertexElementCount)
@@ -599,11 +599,6 @@ class StreamingBufferHeaderEntry():
 		write_uint(file, self.unkn9)
 		write_uint(file, self.unkn10)
 		write_uint(file, self.unkn11)
-		write_uint(file, self.unkn12)
-		write_uint(file, self.unkn13)
-		write_uint(file, self.nextBufferOffset)
-		write_uint(file, self.unkn15)
-#
 
 class VertexElementStruct():
 	def __init__(self):
@@ -675,8 +670,6 @@ class MeshBufferHeader():
 			self.unkn1 = read_short(file)
 			self.sunbreakSecondUnknown = read_uint64(file)
 			self.sf6unkn0 = read_uint64(file)
-			self.streamingVertexElementOffset = read_uint64(file)
-			self.sf6unkn2 = read_uint64(file)
 			
 			
 			
@@ -701,10 +694,10 @@ class MeshBufferHeader():
 				
 				
 				currentPos = file.tell()
-				file.seek(self.streamingVertexElementOffset + i * (8*self.mainVertexElementCount))#8 is vertex element size
+				file.seek(entry.vertexElementOffset)
 				
 				#print(f"vertex element {i} start {file.tell()}")
-				for j in range(0,self.mainVertexElementCount):
+				for j in range(0,entry.mainVertexElementCount):
 					element = VertexElementStruct()
 					element.read(file)
 					entry.vertexElementList.append(element)
@@ -1193,6 +1186,7 @@ class BlendTarget():
 class BlendShapeData():
 	def __init__(self):
 		self.targetCount = 1
+		self.subTargetCount = 0
 		self.typing = 0
 		self.unknFlag = 0
 		self.padding1 = 0
@@ -1206,9 +1200,15 @@ class BlendShapeData():
 		self.blendS = [0,0,0,0]
 		self.blendSSList = []
 	def read(self,file,version):
-		self.targetCount = read_ushort(file)
-		self.typing = read_ushort(file)
-		self.unknFlag = read_uint(file)
+		if version == VERSION_MHWILDS:
+			self.targetCount = read_ushort(file)
+			self.subTargetCount = read_ushort(file)
+			self.blendSStart = read_ushort(file)
+			self.blendSCount = read_ushort(file)
+		else:
+			self.targetCount = read_ushort(file)
+			self.typing = read_ushort(file)
+			self.unknFlag = read_uint(file)
 		self.padding1 = read_uint(file)
 		self.padding2 = read_uint(file)
 		self.dataOffset = read_uint64(file)#[Target count]
@@ -1216,7 +1216,7 @@ class BlendShapeData():
 		self.blendSOffset = read_uint64(file)
 		self.blendSSOffset = read_uint64(file)
 		file.seek(self.dataOffset)
-		for i in range(0,self.targetCount):
+		for i in range(0,self.targetCount + self.subTargetCount):
 			blendTargetEntry = BlendTarget()
 			blendTargetEntry.read(file,version)
 			self.blendTargetList.append(blendTargetEntry)
@@ -1226,11 +1226,14 @@ class BlendShapeData():
 			aabbEntry = AABB()
 			aabbEntry.read(file)
 			self.aabbList.append(aabbEntry)
-		self.blendS = [read_int(file),read_int(file),read_int(file)]
+		file.seek(self.blendSOffset)#TODO FIX WRITE
+		self.blendS = []
+		for i in range(self.targetCount):
+			self.blendS.append(read_int(file))
+		file.seek(self.blendSSOffset)#TODO FIX WRITE
 		self.blendSSList = []
-		for blendTarget in self.blendTargetList:
-			for i in range(0,blendTarget.blendShapeNum):
-				self.blendSSList.append(read_int(file))
+		for i in range(self.blendSCount):
+			self.blendSSList.append(read_int(file))
 	def write(self,file):#TODO FIX WRITE
 		write_ushort(file, self.targetCount)
 		write_ushort(file, self.typing)
