@@ -10,7 +10,7 @@
 #5. The parsed mesh format is rebuilt inside blender_re_mesh.py once it has been error checked
 #6. The parsed format is passed back to file_re_mesh.py and rebuilt into a mesh structure (ParsedREMeshToREMesh())
 
-IMPORT_BLEND_SHAPES = False#Disabled by default because it's broken at the moment.
+IMPORT_BLEND_SHAPES = True#Disabled by default because it's broken at the moment.
 #Set to True if you want to try to fix blend shape importing. The relevant code is in re_mesh_parse.py.
 #There's something wrong with getting the amount of deltas and also the way the deltas are parsed is not correct.
 
@@ -144,6 +144,26 @@ meshFileVersionToGameNameDict = {
 #Used for unmapped mesh versions, potentially allows for importing
 def getNearestRemapVersion(meshVersion):#Returns the remapped version number of the closest mesh version
 	return meshFileVersionToNewVersionDict[min(meshFileVersionToNewVersionDict.keys(), key=lambda x:abs(x-meshVersion))]
+
+class SeekOffsets(list):
+	def __init__(self,file):
+		self.file = file
+		self.addOffsetCount = 0
+	def addSeek(self,bit=64):
+		self.append({"seek":self.file.tell(),"bit":bit})
+	def addOffset(self,file):
+		self[self.addOffsetCount]["offset"] = self.file.tell()
+		self.addOffsetCount += 1
+	def reWrite(self):
+		addrBackup = self.file.tell()
+		for p in self:
+			self.file.seek(p["seek"])
+			match p["bit"]:
+				case 64:
+					write_uint64(p["offset"])
+				case 32:
+					write_uint(p["offset"])
+		self.file.seek(addrBackup)
 
 c_uint64 = ctypes.c_uint64
 class CompressedSixWeightIndices_bits(ctypes.LittleEndianStructure):
@@ -557,9 +577,9 @@ class StreamingBufferHeaderEntry():
 		self.unkn0 = 0
 		self.unkn1 = 0
 		self.unkn2 = 0
-		self.unkn7 = 0
+		self.vertexElementSize = 0
 		self.unkn8 = 0
-		self.unkn9 = 0
+		self.blendShapeOffset = 0
 		self.unkn10 = 0
 		self.unkn11 = 0
 		self.vertexBuffer = None
@@ -577,9 +597,9 @@ class StreamingBufferHeaderEntry():
 		self.vertexElementCount = read_ushort(file)
 		self.unpaddedBufferSize = read_uint(file)
 		self.unpaddedBufferSize2 = read_uint(file)
-		self.unkn7 = read_uint(file)
+		self.vertexElementSize = read_uint(file)
 		self.unkn8 = read_uint(file)
-		self.unkn9 = read_uint(file)
+		self.blendShapeOffset = read_uint(file)
 		self.unkn10 = read_uint(file)
 		self.unkn11 = read_uint(file)
 
@@ -594,9 +614,9 @@ class StreamingBufferHeaderEntry():
 		write_ushort(file, self.vertexElementCount)
 		write_uint(file, self.unpaddedBufferSize)
 		write_uint(file, self.unpaddedBufferSize2)
-		write_uint(file, self.unkn7)
+		write_uint(file, self.vertexElementSize)
 		write_uint(file, self.unkn8)
-		write_uint(file, self.unkn9)
+		write_uint(file, self.blendShapeOffset)
 		write_uint(file, self.unkn10)
 		write_uint(file, self.unkn11)
 
@@ -628,7 +648,8 @@ class MeshBufferHeader():
 		self.NULL = 0
 		self.vertexElementSize = 0#TODO this field name is not correct
 		self.unkn1 = -1
-		self.sunbreakSecondUnknown = 0
+		self.unkn2 = 0
+		self.blendShapeOffset = 0
 		self.vertexElementList = []
 		self.streamingBufferHeaderList = []#WILDS
 		self.vertexBuffer = bytearray()
@@ -655,7 +676,8 @@ class MeshBufferHeader():
 			self.vertexElementSize = read_short(file)
 			self.unkn1 = read_short(file)
 			if version > VERSION_RE8:
-				self.sunbreakSecondUnknown = read_uint64(file)
+				self.unkn2 = read_uint(file)
+				self.blendShapeOffset = read_uint(file)
 		elif version >= VERSION_SF6:
 			self.sunbreakOffset = read_uint64(file)
 			self.totalBufferSize = read_uint(file)
@@ -668,7 +690,8 @@ class MeshBufferHeader():
 			self.NULL = read_uint(file)
 			self.vertexElementSize = read_short(file)
 			self.unkn1 = read_short(file)
-			self.sunbreakSecondUnknown = read_uint64(file)
+			self.unkn2 = read_uint(file)
+			self.blendShapeOffset = read_uint(file)
 			self.sf6unkn0 = read_uint64(file)
 			
 			
@@ -755,7 +778,8 @@ class MeshBufferHeader():
 			write_short(file, self.vertexElementSize)
 			write_short(file, self.unkn1)
 			if version > VERSION_RE8:
-				write_uint64(file, self.sunbreakSecondUnknown)
+				write_uint32(file, self.blendShapeOffset)
+				write_uint32(file, self.blendShapeOffset)
 		elif version >= VERSION_SF6:
 			write_uint64(file, self.sunbreakOffset)
 			write_uint(file, self.totalBufferSize)
@@ -766,7 +790,8 @@ class MeshBufferHeader():
 			write_uint(file, self.NULL)
 			write_short(file, self.vertexElementSize)
 			write_short(file, self.unkn1)
-			write_uint64(file, self.sunbreakSecondUnknown)
+			write_uint(file, self.unkn2)
+			write_uint(file, self.blendShapeOffset)
 			write_uint64(file, self.sf6unkn0)
 			write_uint64(file, self.streamingVertexElementOffset)
 			write_uint64(file, self.sf6unkn2)
@@ -1142,7 +1167,7 @@ class BlendTarget():
 		self.deltaOffset = 0
 		
 		#sf6 changes
-		self.unkn0 = 0
+		self.aabbIndex = 0
 		self.subMeshEntryCount = 0
 		self.unkn2 = 0
 		self.subMeshEntryOffset = 0
@@ -1159,7 +1184,7 @@ class BlendTarget():
 		else:
 			self.blendSSIndex = read_ushort(file)
 			self.blendShapeNum = read_ushort(file)
-			self.unkn0 = read_ushort(file)
+			self.aabbIndex = read_ushort(file)
 			self.subMeshEntryCount = read_ubyte(file)
 			self.unkn2 = read_ubyte(file)
 			self.subMeshEntryOffset = read_uint64(file)
@@ -1173,15 +1198,20 @@ class BlendTarget():
 			file.seek(currentPos)
 		
 	def write(self,file,version):#TODO FIX WRITE
-		write_uint64(file, self.count)
-		write_uint64(file, self.mainOffset)
-		write_uint64(file, self.zero)
-		write_uint64(file, self.hash)
-		for entry in self.blendShapeOffsetList:
-			write_uint64(file,entry)
-		
-		for entry in self.blendShapeList:#TODO FIX WRITE
-			entry.write(file)
+		write_ushort(file, self.blendSSIndex)
+		write_ushort(file, self.blendShapeNum)
+		write_ushort(file, self.aabbIndex)
+		write_ubyte(file, self.subMeshEntryCount)
+		write_ubyte(file, self.unkn2)
+		seekOffsets = SeekOffsets(file)
+		write_uint64(file, self.subMeshEntryOffset)
+
+		file.seek(getPaddedPos(file.tell(), 16))#TODO FIX WRITE
+		seekOffsets.addOffset()
+		for subMeshEntry in self.subMeshEntryList:
+			subMeshEntry.write(file)
+
+		seekOffsets.reWrite()
 
 class BlendShapeData():
 	def __init__(self):
@@ -1236,23 +1266,49 @@ class BlendShapeData():
 			self.blendSSList.append(read_int(file))
 	def write(self,file):#TODO FIX WRITE
 		write_ushort(file, self.targetCount)
-		write_ushort(file, self.typing)
-		write_uint(file, self.unknFlag)
+		if version == VERSION_MHWILDS:
+			write_ushort(file, self.typing)
+			write_ushort(file, self.subTargetCount)
+			write_ushort(file, self.blendSStart)
+			write_ushort(file, self.blendSCount)
+		else:
+			write_ushort(file, self.typing)
+			write_uint(file, self.unknFlag)
 		write_uint(file, self.padding1)
 		write_uint(file, self.padding2)
+		seekOffsets = SeekOffsets(file)
+		seekOffsets.addSeek()
 		write_uint64(file, self.dataOffset)
+		seekOffsets.addSeek()
 		write_uint64(file, self.aabbOffset)
+		seekOffsets.addSeek()
 		write_uint64(file, self.blendSOffset)
+		seekOffsets.addSeek()
 		write_uint64(file, self.blendSSOffset)
-		write_uint(file, self.vertOffset)
-		write_uint(file, self.vertCount)
-		write_ushort(file, self.visconTarget)
-		write_ushort(file,self.blendShapeCount)
-		self.aabb.write(file)
+#		write_uint(file, self.vertOffset)
+#		write_uint(file, self.vertCount)
+#		write_ushort(file, self.visconTarget)
+#		write_ushort(file,self.blendShapeCount)
+#		self.aabb.write(file)
+
+		file.seek(getPaddedPos(file.tell(), 16))#TODO FIX WRITE
+		seekOffsets.addOffset()
+		for entry in blendTargetList:
+			entry.write(file)
+		file.seek(getPaddedPos(file.tell(), 16))#TODO FIX WRITE
+		seekOffsets.addOffset()
+		for entry in self.aabbList:
+			entry.write(file)
+		file.seek(getPaddedPos(file.tell(), 16))#TODO FIX WRITE
+		seekOffsets.addOffset()
 		for entry in self.blendS:
 			write_int(file,entry)
+		file.seek(getPaddedPos(file.tell(), 16))#TODO FIX WRITE
+		seekOffsets.addOffset()
 		for entry in self.blendSSList:
 			write_int(file,entry)
+
+		seekOffsets.reWrite(file)
 
 class BlendShapeHeader():
 	def __init__(self):
@@ -1287,14 +1343,24 @@ class BlendShapeHeader():
 		
 	def write(self,file,version):
 		write_uint64(file, self.count)
-		write_uint64(file, self.mainOffset)
-		write_uint64(file, self.zero)
+		if version < VERSION_MHWILDS:
+			write_uint64(file, self.mainOffset)
+			write_uint64(file, self.zero)
+		else:
+			write_uint64(file, self.zero)
+			write_uint64(file, self.mainOffset)
 		write_uint64(file, self.hash)
+
+		seekOffsets = SeekOffsets()
 		for entry in self.blendShapeOffsetList:
+			seekOffsets.addSeek()
 			write_uint64(file,entry)
 		
 		for entry in self.blendShapeList:#TODO FIX WRITE
+			seekOffsets.addOffset()
 			entry.write(file,version)
+
+		seekOffsets.reWrite()
 
 class BoneAABBGroup():
 	def __init__(self):

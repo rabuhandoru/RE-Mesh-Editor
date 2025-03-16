@@ -397,7 +397,8 @@ def importMesh(meshName = "newMesh",vertexList = [],faceList = [],vertexNormalLi
 				print(f"mesh vertices: {len(meshObj.data.vertices)}")
 				print(f"delta vertices: {len(deltas)}")
 				#if len(deltas) == len(meshObj.data.vertices):
-				for i in range(len(meshObj.data.vertices)):
+				length = min(len(meshObj.data.vertices),len(deltas))
+				for i in range(length):
 					sk.data[i].co = meshObj.data.vertices[i].co + deltas[i]
 	
 	return meshObj
